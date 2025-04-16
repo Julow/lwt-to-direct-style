@@ -12,3 +12,9 @@
    %{bin:lwt-to-direct-style}
    %{bin:ocaml-index}
    (package lwt))))
+
+(subdir
+ lwt_lint
+ (cram
+  (package lwt_lint)
+  (deps %{bin:lwt-lint})))

@@ -191,6 +191,14 @@ type modify_ast = {
   signature : signature -> signature * Cmt.t list;
 }
 
+let handle_fmt_exn = function
+  | Failure msg | Sys_error msg -> error msg
+  | Syntaxerr.Error err ->
+      Format.kasprintf error "Syntax error at %a" Location.print_loc
+        (Syntaxerr.location_of_error err)
+  | exn ->
+      Format.kasprintf error "Unhandled exception: %s" (Printexc.to_string exn)
+
 let _format_in_place ast_kind ~file modify_ast =
   try
     let conf = build_config ~file in
@@ -204,13 +212,7 @@ let _format_in_place ast_kind ~file modify_ast =
         Out_channel.with_open_bin file (fun oc ->
             Out_channel.output_string oc fmted);
       Ok ())
-  with
-  | Failure msg | Sys_error msg -> error msg
-  | Syntaxerr.Error err ->
-      Format.kasprintf error "Syntax error at %a" Location.print_loc
-        (Syntaxerr.location_of_error err)
-  | exn ->
-      Format.kasprintf error "Unhandled exception: %s" (Printexc.to_string exn)
+  with exn -> handle_fmt_exn exn
 
 let format_in_place ~file ~modify_ast =
   let open Extended_ast in
@@ -218,3 +220,21 @@ let format_in_place ~file ~modify_ast =
   | ".ml" | ".eliom" -> _format_in_place Structure ~file modify_ast.structure
   | ".mli" | ".eliomi" -> _format_in_place Signature ~file modify_ast.signature
   | _ -> error ("Don't know what to do with file " ^ file)
+
+let _parse ext_fg ~input_name =
+  let open Ocamlformat_lib.Parse_with_comments in
+  let conf = build_config ~file:input_name in
+  let source = In_channel.with_open_bin input_name In_channel.input_all in
+  let with_comments =
+    parse (parse_ast conf) ~disable_w50:true ext_fg conf ~source ~input_name
+  in
+  with_comments.ast
+
+let parse ~file:input_name =
+  Location.input_name := input_name;
+  try
+    match Filename.extension input_name with
+    | ".ml" | ".eliom" -> Ok (`Structure (_parse Structure ~input_name))
+    | ".mli" | ".eliomi" -> Ok (`Signature (_parse Signature ~input_name))
+    | _ -> error ("Don't know what to do with file " ^ input_name)
+  with exn -> handle_fmt_exn exn

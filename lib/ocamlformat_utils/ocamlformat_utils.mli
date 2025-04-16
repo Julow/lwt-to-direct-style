@@ -21,3 +21,10 @@ val format_in_place :
   file:string -> modify_ast:modify_ast -> (unit, [ `Msg of string ]) result
 (** Format the content of and overwrite [file]. [modify_ast] can be used to
     apply any change to the program. Raises [Failure] and [Sys_error]. *)
+
+val parse :
+  file:string ->
+  ( [ `Structure of structure | `Signature of signature ],
+    [ `Msg of string ] )
+  result
+(** Parse an ocaml file. *)
