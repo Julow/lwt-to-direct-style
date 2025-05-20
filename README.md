@@ -13,6 +13,8 @@ The tools in the collection are:
 
 - [lwt-log-to-logs](#migrate-from-Lwt_log-to-Logs): Migrate from `Lwt_log` to `Logs`.
 
+- [lwt-to-direct-style](#migrate-from-Lwt-to-direct-style-concurrency): Migrate from `Lwt` to direct-style concurrency.
+
 ## Remove usages of `lwt_ppx`
 
 Usage:
@@ -89,7 +91,7 @@ Usage:
 $ lwt-lint .
 ```
 
-Ignoring a Lwt thread makes it implicitly fork in the background, which requires an explicit call with other concurrency libraries.
+To fix the warnings, add type annotations on `let _` and `ignore` expressions and wrap implicit forks with `Lwt.async (fun () -> ...)`.
 
 ## Migrate from `Lwt_log` to `Logs`
 
@@ -102,9 +104,8 @@ $ dune fmt # Remove formatting changes created by the tool
 ```
 
 This will rewrite files containing occurrences of `Lwt_log` and `Lwt_log_js`.
-It must be run from the directory containing Dune's `_build`.
-The migration is done on the AST level but uses Merlin's indexes to type-safely
-detect what to rewrite.
+It must be run from the directory containing Dune's `_build`. This works like
+`lwt-to-direct-style`.
 
 An example of use can be found here:
 https://github.com/ocsigen/ocsigenserver/pull/256
@@ -145,3 +146,94 @@ https://github.com/ocsigen/ocsigenserver/pull/256
 
 - There is no equivalent to `Lwt_log.close`. Closing must be handled in the
   application code, if necessary.
+
+## Migrate from `Lwt` to direct-style concurrency
+
+Usage:
+```
+$ dune fmt # Make sure the project is formatted to avoid unrelated diffs
+$ dune build @ocaml-index # Build the index (required)
+$ lwt-to-direct-style --migrate .
+$ dune fmt # Remove formatting changes created by the tool
+```
+
+This will rewrite files containing occurrences of `Lwt` and other lwt modules.
+It must be run from the directory containing Dune's `_build`.
+
+Usages of `Lwt` are rewritten to the equivalent using `Eio`. The tool can be
+adapted to support other concurrency libraries, see
+[`Concurrency_backend`](bin/lwt_to_direct_style/concurrency_backend.ml).
+
+The migration is done on the syntax level by using OCamlformat (see
+[`Ocamlformat_utils`](lib/ocamlformat_utils/ocamlformat_utils.mli)) to parse
+and print the code. Merlin's indexes (see
+[`Migrate_utils`](lib/migrate_utils/migrate_utils.mli)) are used to detect
+occurrences of identifiers to rewrite.
+
+### Transformation to Direct-style
+
+Translating code using Lwt to direct-style means transforming binds
+(`Lwt.bind`, `let*`, etc..) into simple `let` and removing uses of
+`Lwt.return`. Concurrency is assured by libraries like Eio.
+
+This code:
+```ocaml
+let _ =
+  let* x = f 1 in
+  let+ y = f 2 in
+  Lwt.bind (f 3) (fun z ->
+    Lwt.return (x + y + z))
+```
+is changed to:
+```ocaml
+let _ =
+  let x = f 1 in
+  let y = f 2 in
+  let z = f 3 in
+  x + y + z
+```
+
+Other expressions are simplified this way, like `Lwt.catch` and `Lwt.fail`,
+`Lwt_list.iter_s`, binding operators, and more.
+
+### Concurrency
+
+Transforming code using Lwt to direct-style poses some challenges:
+
+- Arguments to `Lwt.pick` and `Lwt.both` must now be suspended in a
+  `(fun () -> ...)` expression, which was not needed before.
+  Code like this:
+  ```ocaml
+  let _ =
+    let thread_1 = ... in
+    let thread_2 = Lwt.bind thread_1 (fun _ -> ...) in
+    let thread_3 = ... in
+    Lwt.both
+  ```
+  is transformed to:
+  ```ocaml
+  let _ =
+    let thread_1 = Format.printf "1" in
+    let thread_2 =
+      let _ = thread_1 in
+      Format.printf "2"
+    in
+    let thread_3 = Format.printf "3" in
+    Fiber.pair
+      (fun () ->
+        thread_2
+        (* TODO: lwt-to-direct-style: This computation might not be suspended correctly. *))
+      (fun () ->
+        thread_3
+        (* TODO: lwt-to-direct-style: This computation might not be suspended correctly. *))
+  ```
+
+`Lwt.async`
+
+`Lwt.pick`
+
+### Known caveats
+
+- Arguments to `Lwt.pick` and similar must be suspended. This requires manual interventions.
+- The tool differentiate between direct-style and concurrent calls.
+- Implicit forks cannot easily be detected.
