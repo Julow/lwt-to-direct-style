@@ -8,6 +8,7 @@ module Parsing = struct
 end
 
 module Ast_utils = Ast_utils
+module Extended_ast = Extended_ast
 open Parsing
 
 let ( let* ) = Result.bind
@@ -70,30 +71,31 @@ module Trimmed_translation_unit = struct
           "Warning: Some locations have not been considered\n%!";
         List.iter print (List.sort compare l)
 
+  let format_once ~ext_fg ~(conf : Conf.t) ~buffer_size ext_t =
+    let open Fmt in
+    let cmts_t =
+      Cmts.init ext_fg ~debug:conf.opr_opts.debug.v ext_t.source ext_t.ast
+        ext_t.comments
+    in
+    let contents =
+      with_buffer_formatter ~buffer_size
+        (set_margin conf.fmt_opts.margin.v
+        $ set_max_indent conf.fmt_opts.max_indent.v
+        $ fmt_if (not (ext_t.prefix = "")) (str ext_t.prefix $ force_newline)
+        $ with_optional_box_debug ~box_debug:false
+            (Fmt_ast.fmt_ast ext_fg ~debug:conf.opr_opts.debug.v ext_t.source
+               cmts_t conf ext_t.ast))
+    in
+    (contents, cmts_t)
+
   let format (type ext) (ext_fg : ext Extended_ast.t) ~input_name ~prev_source
       ~ext_parsed (conf : Conf.t) =
     Location.input_name := input_name;
     (* iterate until formatting stabilizes *)
     let rec print_check ~i ~(conf : Conf.t) ~prev_source ext_t =
-      let format () =
-        let open Fmt in
-        let cmts_t =
-          Cmts.init ext_fg ~debug:conf.opr_opts.debug.v ext_t.source ext_t.ast
-            ext_t.comments
-        in
-        let contents =
-          with_buffer_formatter
-            ~buffer_size:(String.length prev_source)
-            (set_margin conf.fmt_opts.margin.v
-            $ set_max_indent conf.fmt_opts.max_indent.v
-            $ fmt_if (not (ext_t.prefix = "")) (str ext_t.prefix $ force_newline)
-            $ with_optional_box_debug ~box_debug:false
-                (Fmt_ast.fmt_ast ext_fg ~debug:conf.opr_opts.debug.v
-                   ext_t.source cmts_t conf ext_t.ast))
-        in
-        (contents, cmts_t)
+      let fmted, cmts_t =
+        format_once ~ext_fg ~conf ~buffer_size:(String.length prev_source) ext_t
       in
-      let fmted, cmts_t = format () in
       if String.equal prev_source fmted then (
         if conf.opr_opts.debug.v then
           check_all_locations Format.err_formatter cmts_t;
@@ -190,6 +192,18 @@ type modify_ast = {
   structure : structure -> structure * Cmt.t list;
   signature : signature -> signature * Cmt.t list;
 }
+
+let format_fragment ext_fg ast =
+  Location.input_name := "format_fragment";
+  let source = Source.create ~text:"" ~tokens:[] in
+  let conf = build_config ~file:"" in
+  let fmted, _cmts =
+    Trimmed_translation_unit.format_once ~ext_fg ~conf ~buffer_size:1024
+      { Parse_with_comments.ast; comments = []; prefix = ""; source }
+  in
+  String.trim fmted
+
+let format_expression exp = format_fragment Extended_ast.Expression exp
 
 let handle_fmt_exn = function
   | Failure msg | Sys_error msg -> error msg

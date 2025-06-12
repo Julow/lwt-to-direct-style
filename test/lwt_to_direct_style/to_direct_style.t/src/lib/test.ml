@@ -173,3 +173,7 @@ module M = struct
   include Lwt.Infix
   include Lwt.Syntax
 end
+
+let _ = Lwt.Return ()
+let _ = Lwt.Sleep
+let _ = Lwt.Fail Not_found

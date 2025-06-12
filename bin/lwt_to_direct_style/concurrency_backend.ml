@@ -14,6 +14,11 @@ let eio add_comment =
     used_eio_std := true;
     [ "Promise"; i ]
   in
+  let add_comment fmt = Format.kasprintf add_comment fmt in
+  let add_comment_dropped_exp ~label exp =
+    add_comment "Dropped expression (%s): [%s]." label
+      (Ocamlformat_utils.format_expression exp)
+  in
   object
     method both ~left ~right =
       mk_apply_simple (fiber_ident "pair") [ left; right ]
@@ -49,9 +54,9 @@ let eio add_comment =
           Some (fiber_ident "List" @ [ ident ])
       | ident ->
           add_comment
-            ("[" ^ ident
-           ^ "] can't be translated automatically. See \
-              https://ocaml.org/p/eio/latest/doc/Eio/Fiber/List/index.html");
+            "[%s] can't be translated automatically. See \
+             https://ocaml.org/p/eio/latest/doc/Eio/Fiber/List/index.html"
+            ident;
           None
 
     method sleep d = mk_apply_simple [ "Eio_unix"; "sleep" ] [ d ]
@@ -61,8 +66,7 @@ let eio add_comment =
       let clock = Exp.send (mk_exp_ident [ "env" ]) (mk_loc "mono_clock") in
       mk_apply_simple [ "Eio"; "Time"; "with_timeout_exn" ] [ clock; d; f ]
 
-    method timeout_exn =
-      Pat.construct (mk_longident [ "Eio"; "Time"; "Timeout" ]) None
+    method timeout_exn = mk_longident [ "Eio"; "Time"; "Timeout" ]
 
     method condition_create () =
       mk_apply_simple [ "Eio"; "Condition"; "create" ] [ mk_unit_val ]
@@ -120,4 +124,65 @@ let eio add_comment =
       mk_typ_constr ~params:[ param ] (promise_ident "t")
 
     method direct_style_type param = param
+
+    method of_unix_file_descr ?blocking fd =
+      add_comment "[sw] must be propagated here.";
+      let blocking_arg =
+        let lbl = mk_loc "blocking" in
+        match blocking with
+        | Some (expr, `Lbl) -> [ (Labelled lbl, expr) ]
+        | Some (expr, `Opt) -> [ (Optional lbl, expr) ]
+        | None -> []
+      in
+      mk_apply_ident
+        [ "Eio_unix"; "Fd"; "of_unix" ]
+        ([ (Labelled (mk_loc "sw"), mk_exp_ident [ "sw" ]) ]
+        @ blocking_arg
+        @ [
+            (Labelled (mk_loc "close_unix"), mk_constr_exp [ "true" ]);
+            (Nolabel, fd);
+          ])
+
+    method io_read input buffer buf_offset buf_len =
+      add_comment "[%s] should be a [Cstruct.t]."
+        (Ocamlformat_utils.format_expression buffer);
+      add_comment_dropped_exp ~label:"buffer offset" buf_offset;
+      add_comment_dropped_exp ~label:"buffer length" buf_len;
+      mk_apply_simple [ "Eio"; "Flow"; "single_read" ] [ input; buffer ]
+
+    method fd_close fd = mk_apply_simple [ "Eio_unix"; "Fd" ] [ fd ]
+
+    method main_run promise =
+      add_comment
+        "[Eio_main.run] argument used to be a [Lwt] promise and is now a \
+         [fun]. Make sure no asynchronous or IO calls are done outside of this \
+         [fun].";
+      mk_apply_simple [ "Eio_main"; "run" ]
+        [ mk_fun ~arg_name:"env" (fun _env -> promise) ]
+
+    method input_io_of_fd fd =
+      Exp.constraint_
+        (mk_apply_simple [ "Eio_unix"; "Net"; "import_socket_stream" ] [ fd ])
+        (mk_typ_constr
+           ~params:
+             [ mk_poly_variant [ ("R", []); ("Flow", []); ("Close", []) ] ]
+           [ "Std"; "r" ])
+
+    method output_io_of_fd fd =
+      add_comment
+        "This creates a closeable [Flow.sink] resource but write operations \
+         are rewritten to calls to [Buf_write].\n\
+        \        You might want to use [Buf_write.with_flow sink (fun \
+         buf_write -> ...)].";
+      Exp.constraint_
+        (mk_apply_simple [ "Eio_unix"; "Net"; "import_socket_stream" ] [ fd ])
+        (mk_typ_constr
+           ~params:
+             [ mk_poly_variant [ ("W", []); ("Flow", []); ("Close", []) ] ]
+           [ "Std"; "r" ])
+
+    method io_write_str chan str =
+      mk_apply_simple [ "Eio"; "Buf_write"; "string" ] [ chan; str ]
+
+    method type_out_channel = mk_typ_constr [ "Eio"; "Buf_write"; "t" ]
   end

@@ -139,6 +139,27 @@ let rewrite_lwt_condition_wait ~backend ~state mutex_opt cond =
   in
   backend#condition_wait mutex cond
 
+(** Decode constructors of [Lwt_io.mode]. *)
+let lwt_io_mode_of_ast ~state mode =
+  match mode.pexp_desc with
+  | Pexp_ident lid | Pexp_construct (lid, None) ->
+      Occ.may_rewrite state lid (function
+        | "Lwt_io", ("input" | "Input") -> Some `Input
+        | "Lwt_io", ("output" | "Output") -> Some `Output
+        | _ -> None)
+  | _ -> None
+
+let lwt_io_of_fd ~backend ~state ~mode fd =
+  match lwt_io_mode_of_ast ~state mode with
+  | Some `Input -> Some (backend#input_io_of_fd fd)
+  | Some `Output -> Some (backend#output_io_of_fd fd)
+  | None ->
+      add_comment state
+        "Couldn't translate this call to [Lwt_io.of_fd] because the [~mode] \
+         argument couldn't be decoded. Directly use [Lwt_io.input] or \
+         [Lwt_io.output].";
+      None
+
 let mk_cstr c = Some (mk_constr_exp [ c ])
 
 (* Rewrite calls to functions from the [Lwt] module. See [rewrite_apply] for
@@ -267,6 +288,16 @@ let rewrite_apply ~backend ~state full_ident args =
   let transparent ident =
     take_all (fun args -> Some (mk_apply_ident ident args))
   in
+  let ignore_lblarg ?(cmt = "") arg k =
+    take_lblopt arg @@ fun value ->
+    (match value with
+    | Some (_, kind) ->
+        let prefix = match kind with `Lbl -> '~' | `Opt -> '?' in
+        Printf.ksprintf (add_comment state)
+          "Labelled argument %c%s was dropped.%s" prefix arg cmt
+    | None -> ());
+    k
+  in
   unapply args
   @@
   match full_ident with
@@ -290,6 +321,19 @@ let rewrite_apply ~backend ~state full_ident args =
   | "Lwt_unix", "with_timeout" ->
       take @@ fun d ->
       take @@ fun f -> return (Some (backend#with_timeout d f))
+  | "Lwt_unix", "of_unix_file_descr" ->
+      take @@ fun fd ->
+      take_lblopt "blocking" @@ fun blocking ->
+      ignore_lblarg "set_flags"
+      @@ return (Some (backend#of_unix_file_descr ?blocking fd))
+  | "Lwt_unix", "close" -> take @@ fun fd -> return (Some (backend#fd_close fd))
+  (* [Lwt_unix] contains functions exactly equivalent to functions of the same
+     name in [Unix]. *)
+  | "Lwt_unix", ("getaddrinfo" as fname) ->
+      Format.kasprintf (add_comment state)
+        "This call to [Unix.%s] was [Lwt_unix.%s] before the rewrite." fname
+        fname;
+      transparent [ "Unix"; fname ]
   | "Lwt_condition", "create" ->
       take @@ fun _unit -> return (Some (backend#condition_create ()))
   | "Lwt_condition", "wait" ->
@@ -304,6 +348,23 @@ let rewrite_apply ~backend ~state full_ident args =
   | "Lwt_mutex", "with_lock" ->
       take @@ fun t ->
       take @@ fun f -> return (Some (backend#mutex_with_lock t f))
+  | "Lwt_io", "read_into" ->
+      take @@ fun input ->
+      take @@ fun buffer ->
+      take @@ fun buf_off ->
+      take @@ fun buf_len ->
+      return (Some (backend#io_read input buffer buf_off buf_len))
+  | "Lwt_io", "of_fd" ->
+      ignore_lblarg "buffer"
+      @@ ignore_lblarg ~cmt:"Will behave as if it was [true]." "close"
+      @@ take_lbl "mode"
+      @@ fun mode ->
+      take @@ fun fd -> return (lwt_io_of_fd ~backend ~state ~mode fd)
+  | "Lwt_io", "write" ->
+      take @@ fun chan ->
+      take @@ fun str -> return (Some (backend#io_write_str chan str))
+  | "Lwt_main", "run" ->
+      take @@ fun promise -> return (Some (backend#main_run promise))
   | _ -> return None
 
 (** Transform a [binding_op] into a [pattern] and an [expression] while
@@ -369,6 +430,30 @@ let rewrite_letop ~backend ~state let_ ands body = function
           Some (mk_let pat exp body))
   | _ -> None
 
+(** Rewrite constructors appearing in patterns and expressions. Returns two
+    functions for constructing the pattern and the expression for a given
+    identifier. *)
+let rewrite_constructor_ident ~backend ~state ~loc =
+  let same_arg ident =
+    (* Keep the argument present in the source. *)
+    let pat arg = Some (Pat.construct ident arg)
+    and exp arg = Some (Exp.construct ident arg) in
+    (pat, exp)
+  in
+  let return_none = ((fun _ -> None), fun _ -> None) in
+  function
+  | "Lwt_unix", "Timeout" -> same_arg backend#timeout_exn
+  (* [Lwt_unix] contains a hundred re-exported variant type from the [Unix]
+     module. The all-uppercase constructors are the re-exported ones. *)
+  | "Lwt_unix", cname when String.uppercase_ascii cname = cname ->
+      same_arg (mk_longident [ "Unix"; cname ])
+  | "Lwt", "Return" -> same_arg mk_some_ident
+  | "Lwt", "Sleep" -> same_arg mk_none_ident
+  | "Lwt", "Fail" ->
+      add_comment state ~loc "[Lwt.Fail] shouldn't be used";
+      return_none
+  | _ -> return_none
+
 let rewrite_expression ~backend ~state exp =
   (* Flatten pipelines before applying rewrites. *)
   match (flatten_apply exp).pexp_desc with
@@ -394,20 +479,16 @@ let rewrite_expression ~backend ~state exp =
   | Pexp_letopen ({ popen_expr = { pmod_desc = Pmod_ident lid; _ }; _ }, rhs)
     when Occ.pop state lid ->
       Some rhs
+  | Pexp_construct (lid, arg) ->
+      Occ.may_rewrite state lid (fun ident ->
+          snd (rewrite_constructor_ident ~backend ~state ~loc:lid.loc ident) arg)
   | _ -> None
 
 let rewrite_pattern ~backend ~state pat =
   match pat.ppat_desc with
   | Ppat_construct (lid, arg) ->
       Occ.may_rewrite state lid (fun ident ->
-          match (ident, arg) with
-          | ("Lwt_unix", "Timeout"), None -> Some backend#timeout_exn
-          | ("Lwt", "Return"), arg -> Some (Pat.construct mk_some_ident arg)
-          | ("Lwt", "Sleep"), arg -> Some (Pat.construct mk_none_ident arg)
-          | ("Lwt", "Fail"), Some _ ->
-              add_comment state ~loc:lid.loc "[Lwt.Fail] shouldn't be used";
-              None
-          | _ -> None)
+          fst (rewrite_constructor_ident ~backend ~state ~loc:lid.loc ident) arg)
   | _ -> None
 
 (** The return type of a function is transformed into the direct-style type
@@ -433,6 +514,21 @@ let rewrite_type ~backend ~state typ =
           | ("Lwt", "t"), [ param ] -> Some (backend#promise_type param)
           | ("Lwt_condition", "t"), [ param ] ->
               Some (backend#condition_type param)
+          (* [Lwt_unix] contains a lot of type aliases *)
+          | ( ( "Lwt_unix",
+                (( "inet_addr" | "socket_domain" | "socket_type" | "sockaddr"
+                 | "shutdown_command" | "msg_flag" | "socket_bool_option"
+                 | "socket_int_option" | "socket_optint_option"
+                 | "socket_float_option" | "addr_info" | "getaddrinfo_option"
+                 | "name_info" | "getnameinfo_option" | "terminal_io"
+                 | "setattr_when" | "flush_queue" | "flow_action"
+                 | "process_status" | "wait_flag" | "file_perm" | "open_flag"
+                 | "seek_command" | "file_kind" | "stats" | "access_permission"
+                 | "dir_handle" | "lock_command" | "passwd_entry"
+                 | "group_entry" ) as tname) ),
+              params ) ->
+              Some (mk_typ_constr ~params [ "Unix"; tname ])
+          | ("Lwt_io", "output_channel"), [] -> Some backend#type_out_channel
           | _ -> None)
   | _ -> None
 
