@@ -6,3 +6,5 @@
   merlin-lib.ocaml_typing
   fs_utils
   ocamlformat_utils))
+
+(include_subdirs unqualified)

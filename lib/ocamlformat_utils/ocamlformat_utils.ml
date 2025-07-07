@@ -204,6 +204,7 @@ let format_fragment ext_fg ast =
   String.trim fmted
 
 let format_expression exp = format_fragment Extended_ast.Expression exp
+let format_longident = Fmt_ast.str_longident
 
 let handle_fmt_exn = function
   | Failure msg | Sys_error msg -> error msg
