@@ -1,8 +1,8 @@
+open Ocamlformat_utils.Parsing
+
 module Ocaml_to_ocamlformat : sig
   (** Convert from OCaml [Parsing] values that Merlin uses to the corresponding
       Ocamlformat type. *)
-
-  open Ocamlformat_utils.Parsing
 
   val lid :
     Ocaml_parsing.Longident.t Ocaml_parsing.Location.loc ->
@@ -17,3 +17,5 @@ end
 val tpat_alias_ident :
   Ocaml_typing.Typedtree.value Ocaml_typing.Typedtree.pattern_desc ->
   Ocaml_typing.Ident.t option
+
+val sub_locs_of_ident : Longident.t -> Location.t list

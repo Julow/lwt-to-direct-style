@@ -46,7 +46,16 @@ module Occ = struct
       lids;
     new_tbl
 
-  let remove state lid = Hashtbl.remove state.occ (Loc.of_location lid.loc)
+  let remove_loc state loc = Hashtbl.remove state.occ (Loc.of_location loc)
+
+  let remove_sub_idents state lid =
+    List.iter (remove_loc state) (Compat.sub_locs_of_ident lid.txt)
+
+  let remove state lid =
+    remove_loc state lid.loc;
+    remove_sub_idents state lid
+
+  let remove_s state lid = remove_loc state lid.loc
 
   let pop state lid =
     let loc = Loc.of_location lid.loc in
@@ -57,13 +66,21 @@ module Occ = struct
 
   let get state lid = Hashtbl.find_opt state.occ (Loc.of_location lid.loc)
 
-  let may_rewrite state lid f =
-    match Hashtbl.find_opt state.occ (Loc.of_location lid.loc) with
+  let may_rewrite' state lid f =
+    let loc = Loc.of_location lid.loc in
+    match Hashtbl.find_opt state.occ loc with
     | Some ident ->
         let r = f ident in
-        if Option.is_some r then remove state lid;
+        if Option.is_some r then Hashtbl.remove state.occ loc;
         r
     | None -> None
+
+  let may_rewrite state lid f =
+    let r = may_rewrite' state lid f in
+    if Option.is_some r then remove_sub_idents state lid;
+    r
+
+  let may_rewrite_s = may_rewrite'
 
   let pp_occurrences =
     let is_word = function
