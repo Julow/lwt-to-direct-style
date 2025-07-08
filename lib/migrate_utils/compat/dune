@@ -1,0 +1,11 @@
+(rule
+ (enabled_if
+  (>= %{ocaml_version} 5.4))
+ (action
+  (copy# compat.post54.ml compat.ml)))
+
+(rule
+ (enabled_if
+  (< %{ocaml_version} 5.4))
+ (action
+  (copy# compat.pre54.ml compat.ml)))

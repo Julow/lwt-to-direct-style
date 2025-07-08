@@ -462,7 +462,7 @@ let rewrite_letop ~backend ~state let_ ands body = function
             (mk_let ~is_pun:let_.pbop_is_pun ?value_constraint:let_.pbop_typ
                let_.pbop_pat ~args:let_.pbop_args let_.pbop_exp body)
       | _ :: _ ->
-          List.iter (fun and_ -> Occ.remove state and_.pbop_op) ands;
+          List.iter (fun and_ -> Occ.remove_s state and_.pbop_op) ands;
           let let_pat, let_exp = split_binding_op ~state let_
           and ands_pats, ands_exps =
             List.map (split_binding_op ~state) ands |> List.split
@@ -511,7 +511,8 @@ let rewrite_expression ~backend ~state exp =
   (* Rewrite the use of a [Lwt] infix operator. *)
   | Pexp_infix (op, lhs, rhs) ->
       let args = [ (Nolabel, lhs); (Nolabel, rhs) ] in
-      Occ.may_rewrite state op (fun op -> rewrite_apply ~backend ~state op args)
+      Occ.may_rewrite_s state op (fun op ->
+          rewrite_apply ~backend ~state op args)
   (* Rewrite expressions such as [Lwt.return_unit], but also any partially
      applied [Lwt] function. *)
   | Pexp_ident lid ->
@@ -519,7 +520,7 @@ let rewrite_expression ~backend ~state exp =
           rewrite_apply ~backend ~state ident [])
   (* Simple [let*]. *)
   | Pexp_letop { let_; ands; body; _ } ->
-      Occ.may_rewrite state let_.pbop_op
+      Occ.may_rewrite_s state let_.pbop_op
         (rewrite_letop ~backend ~state let_ ands body)
   | Pexp_sequence (lhs, rhs) when can_simply_sequence ~state rhs -> Some lhs
   | Pexp_open (lid, rhs)

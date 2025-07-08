@@ -6,7 +6,7 @@ type state
 module Occ : sig
   (** Manage occurrences of identifiers that should be migrated. *)
 
-  val pop : state -> 'a Location.loc -> bool
+  val pop : state -> Longident.t Location.loc -> bool
   (** Whether the given longident is an occurrence of an Lwt function. This will
       change the internal table and any subsequent calls for the same longident
       will return [false]. *)
@@ -14,14 +14,24 @@ module Occ : sig
   val get : state -> 'a Location.loc -> (string * string) option
 
   val may_rewrite :
-    state -> 'a Location.loc -> (string * string -> 'b option) -> 'b option
+    state ->
+    Longident.t Location.loc ->
+    (string * string -> 'b option) ->
+    'b option
   (** Calls [f] if [lid] should be rewritten. A rewrite happen if
       [f (unit_name, ident)] is [Some ast] where [ident] is the basename of the
       longident at [lid]. The occurrence is removed from the table if a rewrite
       happened. *)
 
-  val remove : state -> 'a Location.loc -> unit
+  val may_rewrite_s :
+    state -> string Location.loc -> (string * string -> 'b option) -> 'b option
+  (** Like [may_rewrite] but work on strings. *)
+
+  val remove : state -> Longident.t Location.loc -> unit
   (** Remove an occurrence from the table. *)
+
+  val remove_s : state -> string Location.loc -> unit
+  (** Like [remove_s] but work on strings. *)
 end
 
 val add_comment : state -> ?loc:Location.t -> string -> unit

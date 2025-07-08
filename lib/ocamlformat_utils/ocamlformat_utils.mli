@@ -17,9 +17,6 @@ type modify_ast = {
   signature : signature -> signature * Cmt.t list;
 }
 
-val format_expression : expression -> string
-(** Format a fragment of AST, useful for messages. *)
-
 val format_in_place :
   file:string -> modify_ast:modify_ast -> (unit, [ `Msg of string ]) result
 (** Format the content of and overwrite [file]. [modify_ast] can be used to
@@ -31,3 +28,8 @@ val parse :
     [ `Msg of string ] )
   result
 (** Parse an ocaml file. *)
+
+(** Formatting a fragment of AST. This is most useful for messages. *)
+
+val format_expression : expression -> string
+val format_longident : Parsing.Longident.t -> string

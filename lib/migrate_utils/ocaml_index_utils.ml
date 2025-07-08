@@ -1,26 +1,5 @@
 let fail fmt = Printf.ksprintf failwith fmt
 
-(** Convert from OCaml [Parsing] values that Merlin uses to the corresponding
-    Ocamlformat type. *)
-module Ocaml_to_ocamlformat = struct
-  open Ocamlformat_utils.Parsing
-
-  let location_t { Ocaml_parsing.Location.loc_start; loc_end; loc_ghost } =
-    { Location.loc_start; loc_end; loc_ghost }
-
-  let location_loc f { Ocaml_parsing.Location.txt; loc } =
-    { Location.txt = f txt; loc = location_t loc }
-
-  let rec longident =
-    let open Longident in
-    function
-    | Ocaml_parsing.Longident.Lident s -> Lident s
-    | Ldot (a, b) -> Ldot (longident a, b)
-    | Lapply (a, b) -> Lapply (longident a, longident b)
-
-  let lid = location_loc longident
-end
-
 (* Find all the [.ocaml-index] files. *)
 let scan_dune_build_path ~dune_build_dir =
   match Sys.is_directory dune_build_dir with
@@ -67,8 +46,6 @@ let uid_map_of_unit ~packages ~units =
     | Typedtree.Value { val_id = ident; _ }
     | Type { typ_id = ident; _ }
     | Value_binding { vb_pat = { pat_desc = Tpat_var (ident, _, _); _ }; _ }
-    | Value_binding
-        { vb_pat = { pat_desc = Tpat_alias (_, ident, _, _); _ }; _ }
     | Constructor { cd_id = ident; _ }
     | Extension_constructor { ext_id = ident; _ }
     | Module { md_id = Some ident; _ }
@@ -79,10 +56,11 @@ let uid_map_of_unit ~packages ~units =
     | Class_type { ci_id_class = ident; _ }
     | Label { ld_id = ident; _ } ->
         `Found (unit_name, Ident.name ident)
-    | Value_binding { vb_pat = { pat_desc = _; _ }; _ }
-    | Module { md_id = None; _ }
-    | Module_binding { mb_id = None; _ } ->
-        `Ignore
+    | Value_binding { vb_pat = { pat_desc; _ }; _ } -> (
+        match Compat.tpat_alias_ident pat_desc with
+        | Some ident -> `Found (unit_name, Ident.name ident)
+        | None -> `Ignore)
+    | Module { md_id = None; _ } | Module_binding { mb_id = None; _ } -> `Ignore
   in
   if cmts = [] then
     failwith ("Found no [.cmt] in packages: " ^ String.concat ", " packages);
@@ -103,9 +81,11 @@ let uid_map_of_unit ~packages ~units =
     | Some ((`Found _ | `Ignore) as r) -> r
     | None -> `Not_found
 
-let pp_ocaml_lid ppf { Ocaml_parsing.Location.txt; loc } =
-  let open Ocaml_parsing in
-  Format.fprintf ppf "@[<hv 2>%a:@ %a@]" Pprintast.longident txt
+let pp_ocaml_lid ppf lid =
+  let open Ocamlformat_utils.Parsing in
+  let { Location.txt; loc } = Compat.Ocaml_to_ocamlformat.merlin_lid lid in
+  Format.fprintf ppf "@[<hv 2>%s:@ %a@]"
+    (Ocamlformat_utils.format_longident txt)
     Location.print_loc loc
 
 (* Read the index files and extract all occurrences of [units]. *)
@@ -120,10 +100,12 @@ let extract_occurrences_of_unit ~units ~lookup_ident paths =
             (fun uid locs acc ->
               match lookup_ident uid with
               | `Found ident ->
-                  Lid_set.fold
-                    (fun loc acc ->
-                      (ident, Ocaml_to_ocamlformat.lid loc) :: acc)
-                    locs acc
+                  Lid_set.elements locs
+                  |> List.fold_left
+                       (fun acc lid ->
+                         (ident, Compat.Ocaml_to_ocamlformat.merlin_lid lid)
+                         :: acc)
+                       acc
               | `Ignore -> (* Not a value *) acc
               | `Not_found -> (
                   match uid with
